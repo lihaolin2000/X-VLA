@@ -138,7 +138,6 @@ class XVLAProcessor(ProcessorMixin):
         for sample_imgs in images:
             processed = self.image_processor(sample_imgs, return_tensors="pt", **kwargs)["pixel_values"]
             V_exist = processed.size(0)
-
             # Pad to self.num_views
             if V_exist < self.num_views:
                 processed = torch.cat(

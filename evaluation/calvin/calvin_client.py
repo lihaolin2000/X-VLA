@@ -93,13 +93,9 @@ class ClientModel(CalvinBaseModel):
                 "domain_id": 2,
                 "steps": 10
             }
-            # try:
             response = requests.post(self.url, json=payload, timeout=10)
             response.raise_for_status()
             self.action_plan = response.json()["action"][:20]
-            # except Exception as e:
-            #     print(f"⚠️ Server request failed: {e}")
-            #     return np.zeros(3), np.array([0, 0, 0, 1]), -1
         action_predict = np.array(self.action_plan.pop(0))
         self.proprio[:10] = action_predict[:10]
         return (

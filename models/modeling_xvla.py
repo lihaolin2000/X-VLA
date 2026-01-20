@@ -16,27 +16,25 @@
 
 from __future__ import annotations
 
-import logging
-import traceback
-from typing import Any, Dict
+
+
+from typing import Any, Dict, List
+import torch
 
 import numpy as np
-import torch
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from PIL import Image
-import uvicorn
-import json_numpy
+from fastapi import FastAPI
 import cv2
 
 from transformers import PreTrainedModel
+from .server import ModelServer
 from .modeling_florence2 import Florence2ForConditionalGeneration
 from .transformer import SoftPromptedTransformer
 from .action_hub import build_action_space
 from .configuration_xvla import XVLAConfig
 
 
-class XVLA(PreTrainedModel):
+class XVLA(PreTrainedModel, ModelServer):
     """
     XVLA: HuggingFace-compatible Vision-Language-Action policy.
 
@@ -216,79 +214,90 @@ class XVLA(PreTrainedModel):
         return self.action_space.postprocess(action)
 
     # =============================== FastAPI service =============================
-    def _build_app(self, processor):
+
+
+    def inference_api(self, processor, payload: Dict[str, Any]) -> np.ndarray:
         """
-        Minimal FastAPI app for XVLA inference.
+        XVLA inference supporting:
+        - Single sample: payload is a dict of scalars/arrays.
+        - Grouped batch: payload is a dict where some fields are list/tuple of length B.
+            In grouped batch mode, ALL list/tuple fields must share the same length B.
 
-        Args:
-            processor: callable(images, text) -> Dict[str, torch.Tensor]
-                       expected keys: "input_ids", "image_input", "image_mask"
+        Returns:
+        - (T, D) for single sample
+        - (B, T, D) for grouped batch
         """
-        if self.app is not None:
-            return
 
-        app = FastAPI()
+        # -------------------------
+        # 1) Normalize payload -> List[Dict[str, Any]]
+        # -------------------------
+        denoiseing_steps = payload.pop("denoising_steps", 10)
+        batch_fields = [k for k, v in payload.items() if isinstance(v, (list, tuple))]
+        if not batch_fields:
+            batch_payloads: List[Dict[str, Any]] = [payload]
+            batch_size = 1
+        else:
+            lengths = {k: len(payload[k]) for k in batch_fields}
+            if len(set(lengths.values())) != 1: raise ValueError(f"Grouped batch size mismatch among fields: {lengths}")
+            batch_size = next(iter(lengths.values()))
+            batch_payloads = [
+                {k: (payload[k][i] if k in batch_fields else payload[k]) for k in payload}
+                for i in range(batch_size)
+            ]
+        # -------------------------
+        # 2) Utilities
+        # -------------------------
+        def move_to_device(x: Any) -> torch.Tensor:
+            """Convert to tensor and move to model device/dtype."""
+            tensor = x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
+            if tensor.is_floating_point():
+                return tensor.to(device=self.device, dtype=self.dtype)
+            return tensor.to(device=self.device)
 
-        @app.post("/act")
-        def act(payload: Dict[str, Any]):
-            try:
-                self.eval()
-                # Decode up to 3 image inputs
-                images = []
-                for key in ("image0", "image1", "image2"):
-                    if key not in payload: continue
-                    v = json_numpy.loads(payload[key])
-                    if isinstance(v, np.ndarray):
-                        if v.ndim == 1:  # encoded bytes
-                            v = cv2.imdecode(v, cv2.IMREAD_COLOR)
-                        images.append(Image.fromarray(v))
-                    elif isinstance(v, (list, tuple)):
-                        images.append(Image.fromarray(np.array(v)))
-                    elif isinstance(v, str):
-                        images.append(Image.open(v))
-                if not images:
-                    return JSONResponse({"error": "No valid images found."}, status_code=400)
+        def decode_image_list(sample: Dict[str, Any]) -> List[Image.Image]:
+            """Decode image0/image1/... from np.ndarray into PIL Images."""
+            images: List[Image.Image] = []
+            idx = 0
+            while f"image{idx}" in sample:
+                arr = sample[f"image{idx}"]
+                if not isinstance(arr, np.ndarray): raise ValueError(f"image{idx} must be np.ndarray, got {type(arr)}")
+                if arr.ndim == 1:  # encoded buffer
+                    arr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if arr is None: raise ValueError(f"cv2.imdecode failed for image{idx}")
+                    arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+                images.append(Image.fromarray(arr))
+                idx += 1
+            if not images:
+                raise ValueError("Missing images: expected keys image0, image1, ...")
+            return images
 
-                # Multimodal preprocessing by processor
-                inputs = processor(images, payload["language_instruction"])
-                if not {"input_ids", "image_input", "image_mask"}.issubset(inputs):
-                    return JSONResponse({"error": "Processor returned incomplete inputs."}, status_code=400)
+        # -------------------------
+        # 3) Per-sample preprocessing + strict collation (no padding)
+        # -------------------------
+        processor_outputs: List[Dict[str, Any]] = []
+        proprio_batch: List[torch.Tensor] = []
+        domain_id_list: List[int] = []
 
-                # Build proprio/domain tensors
-                proprio = torch.as_tensor(np.asarray(json_numpy.loads(payload["proprio"])))
-                domain_id = torch.tensor([int(payload["domain_id"])], dtype=torch.long)
+        for sample in batch_payloads:
+            images = decode_image_list(sample)
+            processor_outputs.append(processor(images, sample["language_instruction"]))
+            proprio_batch.append(move_to_device(sample["proprio"]))
+            domain_id_list.append(int(sample.get("domain_id", 0)))
 
-                # Align to model's device/dtype
-                device = next(self.parameters()).device
-                dtype = next(self.parameters()).dtype
-
-                def to_model(t: torch.Tensor) -> torch.Tensor:
-                    if not isinstance(t, torch.Tensor):
-                        t = torch.as_tensor(t)
-                    # cast floats to model dtype, keep integral/bool as-is
-                    return t.to(device=device, dtype=dtype) if t.is_floating_point() else t.to(device=device)
-
-                inputs = {k: to_model(v) for k, v in inputs.items()}
-                inputs.update({
-                    "proprio": to_model(proprio.unsqueeze(0)),
-                    "domain_id": domain_id.to(device),
-                })
-
-                # Inference
-                steps = int(payload.get("steps", 10))
-                action = self.generate_actions(**inputs, steps=steps).squeeze(0).float().cpu().numpy()
-                return JSONResponse({"action": action.tolist()})
-
-            except Exception:
-                logging.error(traceback.format_exc())
-                return JSONResponse({"error": "Request failed"}, status_code=400)
-
-        self.app = app
-
-    def run(self, processor, host: str = "0.0.0.0", port: int = 8000):
-        """
-        Launch the FastAPI service.
-        """
-        self._build_app(processor)
-        assert self.app is not None
-        uvicorn.run(self.app, host=host, port=port)
+        model_inputs = {
+            k: torch.stack([move_to_device(out[k]) for out in processor_outputs], dim=0)
+            for k in processor_outputs[0].keys()
+        }
+        model_inputs.update(
+            proprio=torch.stack(proprio_batch, dim=0),  # (B, state_dim)
+            domain_id=torch.tensor(domain_id_list, dtype=torch.long, device=self.device),  # (B,)
+            steps=denoiseing_steps,  # one scalar for whole batch
+        )
+        # -------------------------
+        # 4) Inference
+        # -------------------------
+        self.eval()
+        with torch.inference_mode():
+            actions = self.generate_actions(**model_inputs)  # expected: (B, T, D)
+        actions_np = actions.float().cpu().numpy()
+        return actions_np[0] if batch_size == 1 else actions_np

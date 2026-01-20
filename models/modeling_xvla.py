@@ -231,7 +231,7 @@ class XVLA(PreTrainedModel, ModelServer):
         # -------------------------
         # 1) Normalize payload -> List[Dict[str, Any]]
         # -------------------------
-        denoiseing_steps = payload.pop("denoising_steps", 10)
+        denoiseing_steps = payload.pop("steps", 10)
         batch_fields = [k for k, v in payload.items() if isinstance(v, (list, tuple))]
         if not batch_fields:
             batch_payloads: List[Dict[str, Any]] = [payload]

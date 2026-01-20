@@ -54,7 +54,7 @@ class ModelServer(ABC):
                 logging.error(traceback.format_exc())
                 return JSONResponse({"error": "Request failed"}, status_code=400)
 
-        @app.websocket("/websocket-msgpack")
+        @app.websocket("/act")
         async def websocket_endpoint(websocket):
             await websocket.accept()
             try:
@@ -74,13 +74,13 @@ class ModelServer(ABC):
                 logging.error("WebSocket connection closed.")
         self.app = app
 
-    def run(self, processor, host: str = "0.0.0.0", port: int = 8000):
+    def run(self, host: str = "0.0.0.0", port: int = 8000, **kwargs):
         """
         Launch the FastAPI service.
         """
         logging.info(f"🚀 XVLAServer listening on http://{host}:{port}/act")
         logging.info(f"🚀 XVLAServer listening on ws://{host}:{port}/act")
-        self._build_app(processor)
+        self._build_app(**kwargs)
         assert self.app is not None
         uvicorn.run(self.app, 
                     host=host, 

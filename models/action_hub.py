@@ -62,6 +62,7 @@ class BaseActionSpace(nn.Module):
 
     name: str = "base"
     dim_action: int = 0
+    idx_for_delta: Tuple[int, ...] = ()
     gripper_idx: Tuple[int, ...] = ()
 
     def __init__(self):
@@ -89,10 +90,13 @@ class BaseActionSpace(nn.Module):
         """Default: return unchanged."""
         return proprio, action
 
-    def postprocess(self, action: torch.Tensor) -> torch.Tensor:
+    def postprocess(self, 
+                    action: torch.Tensor,
+                    proprio: torch.Tensor
+                    ) -> torch.Tensor:
         """Default: return unchanged."""
+        action[..., self.idx_for_delta] = proprio[..., self.idx_for_delta] + action[..., self.idx_for_delta]
         return action
-
 
 # =============================================================================
 # Utilities
@@ -161,11 +165,11 @@ class EE6DActionSpace(BaseActionSpace):
         action_m[..., self.gripper_idx] = 0.0
         return proprio_m, action_m
 
-    def postprocess(self, action: torch.Tensor) -> torch.Tensor:
+    def postprocess(self, action: torch.Tensor, proprio: torch.Tensor) -> torch.Tensor:
         """Apply sigmoid to gripper logits."""
         if action.size(-1) > max(self.gripper_idx):
             action[..., self.gripper_idx] = torch.sigmoid(action[..., self.gripper_idx])
-        return action
+        return super().postprocess(action, proprio)
 
 
 @register_action("joint")
@@ -206,11 +210,11 @@ class JointActionSpace(BaseActionSpace):
         action_m[..., self.gripper_idx] = 0.0
         return proprio_m, action_m
 
-    def postprocess(self, action: torch.Tensor) -> torch.Tensor:
+    def postprocess(self, action: torch.Tensor, proprio: torch.Tensor) -> torch.Tensor:
         """Apply sigmoid to gripper logits."""
         if action.size(-1) > max(self.gripper_idx):
             action[..., self.gripper_idx] = torch.sigmoid(action[..., self.gripper_idx])
-        return action
+        return super().postprocess(action, proprio)
 
 
 @register_action("agibot_ee6d")
@@ -256,11 +260,9 @@ class AGIBOTEE6DActionSpace(BaseActionSpace):
         """No preprocessing applied in AGIBOT variant."""
         return proprio, action
 
-    def postprocess(self, action: torch.Tensor) -> torch.Tensor:
+    def postprocess(self, action: torch.Tensor, proprio: torch.Tensor) -> torch.Tensor:
         """AGIBOT does not postprocess."""
-        return action
-
-
+        return super().postprocess(action, proprio)
 
 
 

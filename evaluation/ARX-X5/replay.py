@@ -1,4 +1,4 @@
-from evaluation.utils import ActionBuffer, AutoVisualizer, WebSocketClient
+from evaluation.websocket_client import ActionBuffer, WebSocketClient
 from datasets.utils import read_video_to_frames
 import numpy as np
 import json
@@ -41,6 +41,8 @@ client = WebSocketClient(action_buffer=pred_action_buffer,
                          port=PORT)
 
 
+# ======================================================================# ===  Main Evaluation Loop                                          ===
+# ======================================================================
 
 
 

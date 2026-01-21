@@ -60,6 +60,7 @@ class XVLA(PreTrainedModel, ModelServer):
                 config.action_mode.lower(),
                 real_dim=config.real_action_dim,
                 max_dim=config.max_action_dim,
+                idx_for_delta=config.idx_for_delta
             )
         else:
             self.action_space = build_action_space(config.action_mode.lower())
@@ -157,6 +158,7 @@ class XVLA(PreTrainedModel, ModelServer):
         2) Diffusion-style noisy mixture of actions: x_t = t*noise + (1-t)*gt.
         3) Space-specific preprocessing, prediction, and supervised loss.
         """
+        action, proprio = self.action_space.prepare_for_training(action, proprio)
         enc = self.forward_vlm(input_ids, image_input, image_mask)
 
         B = input_ids.shape[0]
@@ -211,7 +213,7 @@ class XVLA(PreTrainedModel, ModelServer):
                 t=t,
                 **enc,
             )
-        return self.action_space.postprocess(action)
+        return self.action_space.postprocess(action, proprio=proprio)
 
     # =============================== FastAPI service =============================
 

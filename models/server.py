@@ -1,7 +1,7 @@
 from typing import Any, Dict
 import logging
 import traceback
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 import uvicorn
 import json_numpy
@@ -55,8 +55,10 @@ class ModelServer(ABC):
                 return JSONResponse({"error": "Request failed"}, status_code=400)
 
         @app.websocket("/act")
-        async def websocket_endpoint(websocket):
+        async def websocket_endpoint(websocket: WebSocket):
             await websocket.accept()
+            await websocket.send_bytes(msgpack.packb({"type": "welcome", "ok": True}, 
+                                                     use_bin_type=True))
             try:
                 while True:
                     data = await websocket.receive_bytes()
@@ -70,8 +72,10 @@ class ModelServer(ABC):
                     # 4. Pack & Send Response
                     response = {"action": action_pred}
                     await websocket.send_bytes(msgpack.packb(response, use_bin_type=True))
+            except WebSocketDisconnect:
+                logging.info("WS disconnected")
             except Exception:
-                logging.error("WebSocket connection closed.")
+                logging.error(traceback.format_exc())
         self.app = app
 
     def run(self, host: str = "0.0.0.0", port: int = 8000, **kwargs):
@@ -85,7 +89,7 @@ class ModelServer(ABC):
         uvicorn.run(self.app, 
                     host=host, 
                     port=port, 
-                    log_level="warning",
+                    log_level="info",
                     ws_ping_interval=20,
                     ws_ping_timeout=20)
         

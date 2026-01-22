@@ -94,8 +94,7 @@ class WebSocketClient:
         self.websocket = None
         self._future = None
         threading.Thread(target=self._run_loop, daemon=True).start()
-        try: self._sync(self._connect())
-        except: logger.error("Connect failed")
+        self._sync(self._connect())
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -105,17 +104,33 @@ class WebSocketClient:
     def _async(self, coro): return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     async def _connect(self):
-        if self.websocket and self.websocket.open: return
+        if self.websocket: return
         self.websocket = await websockets.connect(self.url, max_size=None)
         await self.websocket.recv() # Handshake
 
     async def _send(self, payload, timestamp: int):
         try:
-            if not self.websocket or self.websocket.closed: await self._connect()
+            if not self.websocket: await self._connect()
             await self.websocket.send(msgpack.packb(payload, use_bin_type=True))
-            resp = msgpack.unpackb(await self.websocket.recv(), raw=False)
-            if "action" in resp: self.buffer.add_actions(resp["action"], timestamp)
-        except Exception: self.websocket = None
+
+            resp_raw = await self.websocket.recv()
+            resp = msgpack.unpackb(resp_raw, raw=False)
+            if resp.get("type") == "welcome":
+                resp = msgpack.unpackb(await self.websocket.recv(), raw=False)
+
+            if "error" in resp:
+                print(f"[WS] server error: {resp['error']}", flush=True)
+                return
+
+            if "action" in resp:
+                import numpy as np
+                self.buffer.add_actions(np.asarray(resp["action"]), timestamp)
+
+        except Exception as e:
+            import traceback
+            print("[WS] exception:", repr(e), flush=True)
+            print(traceback.format_exc(), flush=True)
+            self.websocket = None
 
     def get_action(self): return self.buffer.step()
     
@@ -123,7 +138,7 @@ class WebSocketClient:
         """
         Sends observation to server.
         """
-        if sync: self._sync(self._send(payload, self.buffer.current_time))
+        if sync: return self._sync(self._send(payload, self.buffer.current_time))
         else:
-            if self._future and not self._future.done(): return # Drop frame
+            if self._future and not self._future.done(): return "skip" # Drop frame
             self._future = self._async(self._send(payload, self.buffer.current_time))

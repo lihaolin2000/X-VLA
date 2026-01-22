@@ -218,34 +218,33 @@ class XVLA(PreTrainedModel, ModelServer):
     # =============================== FastAPI service =============================
 
 
-    def inference_api(self, processor, payload: Dict[str, Any]) -> np.ndarray:
+    def inference_api(self, payload: Dict[str, Any] | List[Dict[str, Any]], **kwargs) -> np.ndarray:
         """
         XVLA inference supporting:
         - Single sample: payload is a dict of scalars/arrays.
-        - Grouped batch: payload is a dict where some fields are list/tuple of length B.
-            In grouped batch mode, ALL list/tuple fields must share the same length B.
+        - Grouped batch: payload is a list of dicts with same-length fields.
 
+        payload contents:
+        - "language_instruction": str or List[str], optional
+        - "image0", "image1", ... : np.ndarray (H, W, C) or encoded buffer, required
+        - "proprio": np.ndarray (D,) or (B, D), required
+        - "domain_id": int / List[int] if batch > 1, required
+        - "steps": int, optional, default=10
+        - "batch_size": int, optional, default=1
+        
         Returns:
         - (T, D) for single sample
         - (B, T, D) for grouped batch
         """
-
         # -------------------------
         # 1) Normalize payload -> List[Dict[str, Any]]
         # -------------------------
-        denoiseing_steps = payload.pop("steps", 10)
-        batch_fields = [k for k, v in payload.items() if isinstance(v, (list, tuple))]
-        if not batch_fields:
+        processor = kwargs.get("processor")
+        if isinstance(payload, dict):
             batch_payloads: List[Dict[str, Any]] = [payload]
-            batch_size = 1
-        else:
-            lengths = {k: len(payload[k]) for k in batch_fields}
-            if len(set(lengths.values())) != 1: raise ValueError(f"Grouped batch size mismatch among fields: {lengths}")
-            batch_size = next(iter(lengths.values()))
-            batch_payloads = [
-                {k: (payload[k][i] if k in batch_fields else payload[k]) for k in payload}
-                for i in range(batch_size)
-            ]
+        batch_size = len(batch_payloads)
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
         # -------------------------
         # 2) Utilities
         # -------------------------
@@ -253,8 +252,8 @@ class XVLA(PreTrainedModel, ModelServer):
             """Convert to tensor and move to model device/dtype."""
             tensor = x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
             if tensor.is_floating_point():
-                return tensor.to(device=self.device, dtype=self.dtype)
-            return tensor.to(device=self.device)
+                return tensor.to(device=device, dtype=dtype)
+            return tensor.to(device=device)
 
         def decode_image_list(sample: Dict[str, Any]) -> List[Image.Image]:
             """Decode image0/image1/... from np.ndarray into PIL Images."""
@@ -272,27 +271,28 @@ class XVLA(PreTrainedModel, ModelServer):
             if not images:
                 raise ValueError("Missing images: expected keys image0, image1, ...")
             return images
-
         # -------------------------
         # 3) Per-sample preprocessing + strict collation (no padding)
         # -------------------------
-        processor_outputs: List[Dict[str, Any]] = []
+        language_batch: List[str] = []
+        images_batch: List[List[Image.Image]] = []
         proprio_batch: List[torch.Tensor] = []
         domain_id_list: List[int] = []
-
+        denoiseing_steps = batch_payloads[0].get("steps", 10)
+        
         for sample in batch_payloads:
-            images = decode_image_list(sample)
-            processor_outputs.append(processor(images, sample["language_instruction"]))
+            images_batch.append(decode_image_list(sample))
+            language_batch.append(sample.get("language_instruction", ""))
             proprio_batch.append(move_to_device(sample["proprio"]))
             domain_id_list.append(int(sample.get("domain_id", 0)))
-
-        model_inputs = {
-            k: torch.stack([move_to_device(out[k]) for out in processor_outputs], dim=0)
-            for k in processor_outputs[0].keys()
-        }
+        model_inputs = processor(
+            images=images_batch,
+            language_instruction=language_batch,
+        )
+        model_inputs = {k: move_to_device(v) for k, v in model_inputs.items()}
         model_inputs.update(
             proprio=torch.stack(proprio_batch, dim=0),  # (B, state_dim)
-            domain_id=torch.tensor(domain_id_list, dtype=torch.long, device=self.device),  # (B,)
+            domain_id=torch.tensor(domain_id_list, dtype=torch.long, device=device),  # (B,)
             steps=denoiseing_steps,  # one scalar for whole batch
         )
         # -------------------------

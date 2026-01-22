@@ -130,10 +130,8 @@ def main():
 
     # --- Check existence before writing ---
     if osp.exists(info_path):
-        print(f"❌ Error: {info_path} already exists. "
+        print(f"❕ Warning: {info_path} already exists. "
             f"This usually means another server is still running or the previous job did not clean up properly.")
-        print("👉 Please remove it manually or use a different --output_dir.")
-        sys.exit(1)
 
     # --- Write safely ---
     try:

@@ -1,5 +1,5 @@
 from datasets.utils import read_video_to_frames
-from evaluation.websocket_client import ActionBuffer, WebSocketClient
+from evaluation.websocket_client import ActionBuffer, HttpClient
 import numpy as np
 import json, time, os
 
@@ -50,9 +50,9 @@ p(f"abs_traj: shape={abs_traj.shape}, dtype={abs_traj.dtype}")
 # WS client
 # =========================
 HOST, PORT = "127.0.0.1", 8010
-p(f"Init WS client -> ws://{HOST}:{PORT}/act")
+p(f"Init HTTP client -> http://{HOST}:{PORT}/act")
 pred_action_buffer = ActionBuffer(merge_strategy="replace")
-client = WebSocketClient(action_buffer=pred_action_buffer, host=HOST, port=PORT)
+client = HttpClient(action_buffer=pred_action_buffer, host=HOST, port=PORT)
 p("Client ready")
 
 # =========================
@@ -66,7 +66,7 @@ for i in range(0, T, 30):
     # p(f"step={i} proprio={payload['proprio'].shape} img0={payload['image0'].shape} {payload['image0'].dtype}")
     
     t0 = time.time()
-    client.update(payload, sync=True)
+    client.update(payload)
     for _ in range(30):
         client.get_action()
     p(f"step={i} update ok dt={(time.time()-t0)*1000:.1f}ms")

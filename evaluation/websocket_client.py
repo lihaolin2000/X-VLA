@@ -5,6 +5,7 @@ import msgpack
 import msgpack_numpy as m
 import asyncio
 import websockets
+import json_numpy
 from typing import Optional, List, Dict
 m.patch()
 logger = logging.getLogger(__name__)
@@ -86,6 +87,42 @@ class ActionBuffer:
 # ==============================================================================
 # === 2. Network Client (Pure I/O)                                           ===
 # ==============================================================================
+
+
+
+class HttpClient:
+    def __init__(self, action_buffer: ActionBuffer, host: str, port: int):
+        import requests
+        self.url = f"http://{host}:{port}/act"
+        self.buffer = action_buffer
+        self.session = requests.Session()
+
+    def get_action(self): return self.buffer.step()
+    
+    def update(self, payload: Dict):
+        """
+        Sends observation to server.
+        """
+        try:
+            for key in payload.keys():
+                if isinstance(payload[key], np.ndarray):
+                    payload[key] = json_numpy.dumps(payload[key])
+            resp = self.session.post(self.url, json=payload, timeout=5.0)
+            resp.raise_for_status()
+            resp_json = resp.json()
+            if "error" in resp_json:
+                print(f"[HTTP] server error: {resp_json['error']}", flush=True)
+                return
+            if "action" in resp_json:
+                self.buffer.add_actions(np.asarray(resp_json["action"]), self.buffer.current_time)
+        except Exception as e:
+            import traceback
+            print("[HTTP] exception:", repr(e), flush=True)
+            print(traceback.format_exc(), flush=True)
+
+
+
+
 class WebSocketClient:
     def __init__(self, action_buffer: ActionBuffer, host: str, port: int):
         self.url = f"ws://{host}:{port}/act"
@@ -123,7 +160,6 @@ class WebSocketClient:
                 return
 
             if "action" in resp:
-                import numpy as np
                 self.buffer.add_actions(np.asarray(resp["action"]), timestamp)
 
         except Exception as e:

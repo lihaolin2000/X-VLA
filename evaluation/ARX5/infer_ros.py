@@ -1,41 +1,80 @@
-from robocontrol.xrrobot import RobotAccessor
+import rospy
+import cv2
+from arm_control.msg import JointControl
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+
 from evaluation.websocket_client import WebSocketClient, HttpClient, ActionBuffer
 import numpy as np
+
+class X5Ros():
+    def __init__(self, nodeName='ArmSlaveNode'):
+        rospy.init_node(nodeName, anonymous=True)
+        self._left_joint_pub = rospy.Publisher('/joint_control', JointControl, queue_size=10)
+        self._right_joint_pub = rospy.Publisher('/joint_control2', JointControl, queue_size=10)
+        self._left_joint_sub = rospy.Subscriber('/joint_information',JointControl,self.left_joints_callback)
+        self._right_joint_sub = rospy.Subscriber('/joint_information2',JointControl,self.right_joints_callback)
+        self._left_joints_state = []
+        self._right_joints_state = []
+        
+        self.bridge = CvBridge()
+        self.left_image = rospy.Subscriber('/camera1/usb_cam1/image_raw',Image,self.left_image_callback)
+        self.center_image = rospy.Subscriber('/camera2/usb_cam2/image_raw',Image,self.center_image_callback)
+        self.right_image = rospy.Subscriber('/camera3/usb_cam3/image_raw',Image,self.right_image_callback)
+        
+    def left_joints_callback(self,data):
+        self._left_joints_state = data.joint_pos
+
+    def right_joints_callback(self,data):
+        self._right_joints_state = data.joint_pos
+
+    def left_image_callback(self,data):
+        self.left_camera_image = self.bridge.imgmsg_to_cv2(data.data, "bgr8")
+        self.left_camera_image = cv2.resize(self.left_camera_image, (256, 256))
+        self.left_camera_image = cv2.cvtColor(self.left_camera_image, cv2.COLOR_BGR2RGB)
+
+    def center_image_callback(self,data):
+        self.head_camera_image = self.bridge.imgmsg_to_cv2(data.data, "bgr8")
+        self.head_camera_image = cv2.resize(self.head_camera_image, (256, 256))
+        self.head_camera_image = cv2.cvtColor(self.head_camera_image, cv2.COLOR_BGR2RGB)
+
+    def right_image_callback(self,data):
+        self.right_camera_image = self.bridge.imgmsg_to_cv2(data.data, "bgr8")
+        self.right_camera_image = cv2.resize(self.right_camera_image, (256, 256))
+        self.right_camera_image = cv2.cvtColor(self.right_camera_image, cv2.COLOR_BGR2RGB)
+
+
+    def send_left_joint_command(self, joint_positions):
+        msg = JointControl()
+        msg.joint_pos = joint_positions
+        msg.joint_vel = [0.0] * 7
+        msg.joint_cur = [0.0] * 7
+        self._left_joint_pub.publish(msg)
+
+    def send_right_joint_command(self, joint_positions):
+        msg = JointControl()
+        msg.joint_pos = joint_positions
+        msg.joint_vel = [0.0] * 7
+        msg.joint_cur = [0.0] * 7
+        self._right_joint_pub.publish(msg)
+
 def get_observation(robot_controller):
-    l_ee_pose = robot_controller.left_arm.get_state_end_pose()
-    r_ee_pose = robot_controller.right_arm.get_state_end_pose()
-    l_joints_pos = robot_controller.left_arm.get_state_joints_pos()
-    r_joints_pos = robot_controller.right_arm.get_state_joints_pos()
-    l_gripper = robot_controller.left_ee.get_state()
-    r_gripper = robot_controller.right_ee.get_state()
-    
-    left_image = robot_controller.left_camera.get_raw_image()
-    right_image = robot_controller.right_camera.get_raw_image()
-    head_image = robot_controller.head_camera.get_raw_image()
     observation = {
-        "left_ee_pose": l_ee_pose,
-        "right_ee_pose": r_ee_pose,
-        "left_joints_pos": l_joints_pos,
-        "right_joints_pos": r_joints_pos,
-        "left_gripper": l_gripper,
-        "right_gripper": r_gripper,
-        "left_camera_image": left_image,
-        "right_camera_image": right_image,
-        "head_camera_image": head_image,
+        "left_joints_pos": robot_controller._left_joints_state,
+        "right_joints_pos": robot_controller._right_joints_state,
+        "left_camera_image": robot_controller.left_camera_image,
+        "right_camera_image": robot_controller.right_camera_image,
+        "head_camera_image": robot_controller.head_camera_image,
     }
     return observation
 
 def main(args):
-
     assert args.control_mode == "joints_pos", \
         "Only joints_pos control mode is supported in this script."
 
-    robot_controller = RobotAccessor().get_robot("desktop")
+    robot_controller = X5Ros()
     if robot_controller is None:
         raise RuntimeError("Failed to get robot 'desktop'")
-
-    robot_controller.left_arm.set_mode(args.control_mode)
-    robot_controller.right_arm.set_mode(args.control_mode)
     print("Robot controller initialized with control mode:", args.control_mode)
 
     #=====================================================================
@@ -62,12 +101,9 @@ def main(args):
             "image1": observation["left_camera_image"],
             "image2": observation["right_camera_image"],
 
-
             "proprio": np.concatenate([
                 observation["left_joints_pos"],
-                observation["right_joints_pos"],
-                [observation["left_gripper"]],
-                [observation["right_gripper"]],
+                observation["right_joints_pos"]
             ]),
             "language_instruction": args.language_instruction,
             "domain": 0,
@@ -77,14 +113,11 @@ def main(args):
             action = model_client.get_action()
             if action is not None: break
             print("get action:", action)
-            if args.debug_mode:      
+            if args.debug_mode:
                 print("current proprio:", payload["proprio"])          
                 input("Debug mode: Press Enter to send action...")
-            robot_controller.left_arm.send_cmd_joints_pos(action[:7])
-            robot_controller.right_arm.send_cmd_joints_pos(action[7:14])
-            robot_controller.left_ee.send_cmd(action[14])
-            robot_controller.right_ee.send_cmd(action[15])
-
+            robot_controller.send_left_joint_command(action[:7])
+            robot_controller.send_right_joint_command(action[7:14])
 
 if __name__ == "__main__":
     import argparse
@@ -101,6 +134,7 @@ if __name__ == "__main__":
     parser.add_argument("client_type", 
                         type=str, 
                         choices=["http", "ws"], 
+                        default="http",
                         help="Type of client to use: http or ws"
     )
     parser.add_argument("--language-instruction", 

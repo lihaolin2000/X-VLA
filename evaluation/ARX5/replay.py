@@ -26,7 +26,10 @@ p(f"Aligned T={T}")
 # Read gt actions
 # =========================
 data_file = "metas/actions.json"
-Action_key = ["follow_left_joint_pos","follow_right_joint_pos","follow_left_gripper","follow_right_gripper"]
+Action_key = ["follow_left_joint_pos",
+              "follow_right_joint_pos",
+              "follow_left_gripper",
+              "follow_right_gripper"]
 
 p(f"Reading actions: {data_file}")
 gt_data = json.load(open(data_file, "r"))["data"]

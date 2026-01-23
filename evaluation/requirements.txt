@@ -1,0 +1,5 @@
+msgpack
+msgpack-numpy
+websockets
+numpy
+json_numpy

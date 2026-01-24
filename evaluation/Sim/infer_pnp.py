@@ -1,30 +1,35 @@
 # Import necessary modules
 from evaluation.websocket_client import WebSocketClient, HttpClient, ActionBuffer
 import json_numpy
+import msgpack
+import msgpack_numpy as m
+m.patch()
 import numpy as np
 from genmanip_client import EvalClient
-
+import requests
+import av
+import numpy as np
 # Initialize the evaluation client
 eval_client = EvalClient(
-                    base_url="http://123.57.187.96:55001",  # The base URL for the evaluation server
+                    base_url="http://dsw-notebook-dsw-fh4w05j2tmvgkh5xtt-10002.vpc-2zef1skt5zeyxqsntfobm.instance-forward.dsw.cn-beijing.aliyuncs.com:55001",  # The base URL for the evaluation server
                     worker_ids=["0"],  # Worker IDs
-                    config="task1.yml"  # Load a new task configuration file
+                    config="configs/tasks/ebench/simple_pnp/task1.yml"  # Load a new task configuration file
                 )
 
-# Action buffer to handle action merging strategy
-action_buffer = ActionBuffer(merge_strategy="replace")
-
 # Initialize the model client
-model_client = WebSocketClient(
+action_buffer = ActionBuffer(merge_strategy="replace")
+model_client = HttpClient(
     action_buffer,
-    "10.140.60.112",
+    "127.0.0.1",
     8010)
 
+
+saved_video = []
 try:
     print("Resetting the environment...")
     obs = eval_client.reset()  # Reset environment and get initial observation
     print("Environment reset complete. Starting action loop.")
-
+    
     while True:
         # Fetch the action from the model
         action = model_client.get_action()
@@ -32,10 +37,11 @@ try:
         if action is None:
             print("No action received, sending data to the model.")
             # Extract relevant data from the current observation
+            print(obs['0']['obs'].keys())
             image = obs['0']['obs']['camera_data']
             instruction = obs['0']['obs']['instruction']
-            proprio = np.asarray(obs['state.joints'])
-
+            proprio = np.asarray(obs['0']['obs']['state.joints'])
+            # proprio = np.concatenate([proprio[:6], proprio[8:14]])
             # Prepare the payload for the model
             payload = {
                 "proprio": json_numpy.dumps(proprio),  # Joint state
@@ -46,7 +52,7 @@ try:
                 "domain_id": 0,
                 "steps": 10
             }
-
+            
             # Send data to the model and get the next action
             model_client.update(payload)
             action = model_client.get_action()
@@ -56,7 +62,7 @@ try:
         right_joint = action[6:12]
         left_gripper = action[12]
         right_gripper = action[13]
-        base_motion = action[14:20]
+        base_motion = action[14:17]
 
         # Process gripper actions
         if left_gripper < 0.:
@@ -70,21 +76,24 @@ try:
             right_gripper = [0.0, 0.0]  # Open gripper
         
         # Format the action for submission
-        format_action = {
+        format_action = {'0':{
             'action': left_joint.tolist() + left_gripper + right_joint.tolist() + right_gripper,
             'base_motion': base_motion.tolist(),
             'control_type': "joint_position"
-        }
-
+        }}
+        data_to_send = {"image": obs['0']['obs']['camera_data']['top_camera']['rgb']}
+        ### save current image to 'exp/image{idx}.jpg'
         print("Submitting action to environment.")
         obs, done = eval_client.step(format_action)  # Submit action and get the next observation
 
+        response = requests.post("http://127.0.0.1:8080/upload",
+                            data=msgpack.packb(data_to_send, use_bin_type=True))
         # Check if the task is done
         if done:
             print("Task completed.")
             break
-
 finally:
+
     print("Cleaning up and killing workers...")
     eval_client.kill_workers()
     print("Client cleaned.")

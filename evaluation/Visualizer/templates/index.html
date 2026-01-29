@@ -1,37 +1,151 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-time Image Stream</title>
-    <style>
-        #video-player {
-            max-width: 800px;
-        }
-    </style>
+    <title>VLA High-Speed Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js"></script>
+    <style>
+        :root { --bg: #050505; --panel: #111; --accent: #38bdf8; }
+        body { margin: 0; background: var(--bg); color: #eee; font-family: system-ui; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        header { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid #333; }
+        .stats { display: flex; gap: 20px; font-family: monospace; align-items: center; }
+        .btn-mode { border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .on { background: #0369a1; color: white; }
+        .off { background: #ef4444; color: white; }
+        
+        .video-grid { display: grid; grid-template-columns: 1.8fr 1fr 1fr; gap: 10px; padding: 10px; height: 45vh; box-sizing: border-box; }
+        .cam-box { background: #000; border: 1px solid #222; border-radius: 8px; overflow: hidden; position: relative; }
+        .cam-box img { width: 100%; height: 100%; object-fit: contain; }
+        .label { position: absolute; top: 5px; left: 5px; background: rgba(0,0,0,0.7); padding: 2px 6px; font-size: 11px; color: var(--accent); }
+
+        .main-container { flex: 1; display: flex; padding: 0 10px 10px 10px; gap: 10px; min-height: 0; }
+        .chart-wrapper { flex: 1; background: var(--panel); border-radius: 8px; border: 1px solid #222; padding: 10px; position: relative; }
+        .legend-sidebar { width: 170px; background: var(--panel); border-radius: 8px; border: 1px solid #222; padding: 10px; overflow-y: auto; }
+        .legend-item { display: flex; align-items: center; gap: 8px; padding: 5px; cursor: pointer; font-size: 12px; border-radius: 4px; }
+        .legend-item.hidden-line { opacity: 0.25; filter: grayscale(1); }
+        .color-dot { width: 10px; height: 10px; border-radius: 2px; }
+    </style>
 </head>
 <body>
-    <h1>Real-time Video Stream</h1>
 
-    <!-- Video Player for Image Stream -->
-    <h3>Real-time Image Stream:</h3>
-    <img id="video-player" style="max-width: 800px;" />
+<header>
+    <div style="font-weight:bold; letter-spacing: 1px;">VLA SLIDING-WINDOW ANALYST</div>
+    <div class="stats">
+        <div>FPS: <span id="fps-val" style="color:var(--accent)">0</span></div>
+        <div>STEP: <span id="step-val">0</span></div>
+        <button id="lock-btn" class="btn-mode on" onclick="toggleLock()">AUTO-SCROLL: ON</button>
+    </div>
+</header>
 
-    <script>
-        // Connect to the WebSocket server
-        var socket = io.connect('http://' + document.domain + ':' + location.port);
+<div class="video-grid">
+    <div class="cam-box"><div class="label">TOP_CAM</div><img id="img-top"></div>
+    <div class="cam-box"><div class="label">LEFT_CAM</div><img id="img-left"></div>
+    <div class="cam-box"><div class="label">RIGHT_CAM</div><img id="img-right"></div>
+</div>
 
-        // Check if the WebSocket connection is established
-        socket.on('connect', function() {
-            console.log('WebSocket connected!');
+<div class="main-container">
+    <div class="chart-wrapper"><canvas id="mainChart"></canvas></div>
+    <div class="legend-sidebar" id="custom-legend"></div>
+</div>
+
+<script>
+    const socket = io();
+    let chart, isAutoScroll = true;
+    const X_WINDOW = 120; // 视图窗口点数
+    let frames = 0;
+    setInterval(() => { document.getElementById('fps-val').innerText = frames; frames = 0; }, 1000);
+
+    function initChart(N) {
+        const ctx = document.getElementById('mainChart').getContext('2d');
+        const datasets = [];
+        const container = document.getElementById('custom-legend');
+
+        for(let i=0; i<N; i++) {
+            const color = `hsl(${(i * 360 / N)}, 75%, 60%)`;
+            datasets.push({
+                label: `D${i}`, data: [], borderColor: color,
+                borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1
+            });
+            const item = document.createElement('div');
+            item.className = 'legend-item';
+            item.id = `leg-${i}`;
+            item.innerHTML = `<input type="checkbox" checked id="cb-${i}"><div class="color-dot" style="background:${color}"></div>Dim ${i}`;
+            item.onclick = (e) => { if(e.target.type !== 'checkbox') soloDataset(i); else toggleDataset(i); };
+            container.appendChild(item);
+        }
+        datasets.push({ label: 'T_LINE', data: [], borderColor: '#ef4444', borderWidth: 2, borderDash: [5,5], pointRadius: 0, isIndicator: true });
+
+        chart = new Chart(ctx, {
+            type: 'line', data: { datasets: datasets },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                scales: { 
+                    x: { type: 'linear', grid: { color: '#1a1a1a' } },
+                    y: { grid: { color: '#1a1a1a' }, grace: '10%' }
+                },
+                plugins: {
+                    legend: { display: false },
+                    zoom: {
+                        pan: { enabled: true, mode: 'xy', onPanStart: () => { isAutoScroll=false; updateUI(); } },
+                        zoom: { wheel: { enabled: true }, mode: 'xy', onZoomStart: () => { isAutoScroll=false; updateUI(); } }
+                    }
+                }
+            }
         });
+    }
 
-        socket.on('new_frame', function(data) {
-            console.log('Received data.frame:', data.frame);  // Debugging line
-            var imgElement = document.getElementById("video-player");
-            imgElement.src = "data:image/png;base64," + data.frame;
-        });
-    </script>
+    function soloDataset(idx) {
+        chart.data.datasets.forEach((ds, i) => { if(!ds.isIndicator) { ds.hidden = (i !== idx); updateLegUI(i, ds.hidden); } });
+        chart.update();
+    }
+    function toggleDataset(idx) {
+        chart.data.datasets[idx].hidden = !chart.data.datasets[idx].hidden;
+        updateLegUI(idx, chart.data.datasets[idx].hidden);
+        chart.update();
+    }
+    function updateLegUI(idx, hidden) {
+        document.getElementById(`leg-${idx}`).classList.toggle('hidden-line', hidden);
+        document.getElementById(`cb-${idx}`).checked = !hidden;
+    }
+    function toggleLock() { isAutoScroll = !isAutoScroll; updateUI(); }
+    function updateUI() {
+        const btn = document.getElementById('lock-btn');
+        btn.className = isAutoScroll ? 'btn-mode on' : 'btn-mode off';
+        btn.innerText = `AUTO-SCROLL: ${isAutoScroll ? 'ON' : 'OFF'}`;
+    }
+
+    socket.on('new_frame', (data) => {
+        frames++;
+        if(data.images.top) document.getElementById('img-top').src = "data:image/jpeg;base64," + data.images.top;
+        if(data.images.left) document.getElementById('img-left').src = "data:image/jpeg;base64," + data.images.left;
+        if(data.images.right) document.getElementById('img-right').src = "data:image/jpeg;base64," + data.images.right;
+
+        if (data.telemetry) {
+            const actions = data.telemetry, start = data.start_idx, t = data.step_idx;
+            if (!chart) initChart(actions[0].length);
+            
+            let visibleVals = [];
+            for (let n = 0; n < chart.data.datasets.length - 1; n++) {
+                chart.data.datasets[n].data = actions.map((v, i) => ({x: start + i, y: v[n]}));
+                if(!chart.data.datasets[n].hidden) actions.forEach(r => visibleVals.push(r[n]));
+            }
+
+            const min = visibleVals.length ? Math.min(...visibleVals) : -1;
+            const max = visibleVals.length ? Math.max(...visibleVals) : 1;
+            const pad = (max - min) * 0.2;
+            chart.data.datasets[chart.data.datasets.length-1].data = [{x: t, y: min-pad}, {x: t, y: max+pad}];
+
+            if (isAutoScroll) {
+                chart.options.scales.x.min = t - X_WINDOW/2;
+                chart.options.scales.x.max = chart.options.scales.x.min + X_WINDOW;
+            }
+            chart.update('none');
+        }
+        document.getElementById('step-val').innerText = data.step_idx;
+    });
+</script>
 </body>
 </html>

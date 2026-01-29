@@ -17,73 +17,107 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 class ActionBuffer:
     """
-    Thread-safe buffer for Receding Horizon Control (RHC).
-    Lightweight: Only stores action arrays and timestamps. No images.
+    High-performance Ring Buffer for Receding Horizon Control (RHC).
     """
     def __init__(self, 
-                 action_dim: int = 20,
-                 merge_strategy: str = "average", 
-                 merge_weight: float = 0.5):
-        assert merge_strategy in ["replace", "average"], "unsupport merge strategy"
-        self.merge_strategy = merge_strategy
-        self.merge_weight = merge_weight
-        self.action_dim = action_dim
-        self._lock = threading.Lock()
+                 action_dim: int = 20, 
+                 max_steps: int = 256, 
+                 merge_weight: float = 1.0):
         
-        # Internal State
-        self.action_plan: Dict[int, np.ndarray] = {}
+        self.action_dim = action_dim
+        self.capacity = max_steps
+        self.merge_weight = merge_weight
+        self._lock = threading.Lock()
+        # Pre-allocated Memory (Zero GC)
+        self.buffer = np.zeros((self.capacity, self.action_dim), dtype=np.float32)
+        self.valid_mask = np.zeros(self.capacity, dtype=bool)
+        
+        # Time tracking
         self.current_time = 0
+        self.min_valid_time = float('inf')
+        self.max_valid_time = float('-inf')
 
     def reset(self):
-        """Resets the buffer state."""
+        """Resets the buffer state instantly."""
         with self._lock:
-            self.action_plan = {}
+            self.buffer.fill(0)
+            self.valid_mask.fill(False)
             self.current_time = 0
-
-    def add_actions(self, actions: List[np.ndarray] | np.ndarray, timestamp: int):
+            self.min_valid_time = float('inf')
+            self.max_valid_time = float('-inf')
+    def add_actions(self, actions: np.ndarray, timestamp: int):
         """
-        Integrates new inference results with temporal alignment.
+        Integrates new predictions into the ring buffer with temporal ensembling.
         """
-        if isinstance(actions, np.ndarray):
-            actions = [actions[i] for i in range(actions.shape[0])]
-        try:
-            assert all([act.shape[-1] == self.action_dim for act in actions]), "action dimension mismatch"
-        except Exception as e:
-            logger.error(f"ActionBuffer add_actions error: {e}")
-            return
-        with self._lock:
-            # Temporal Ensembling
-            for i, new_act in enumerate(actions):
-                idx = timestamp + i
-                if idx not in self.action_plan: self.action_plan[idx] = new_act
-                else:
-                    if self.merge_strategy == "replace":
-                        self.action_plan[idx] = new_act
-                    elif self.merge_strategy == "average":
-                        curr = self.action_plan[idx]
-                        self.action_plan[idx] = curr * (1 - self.merge_weight) + new_act * self.merge_weight
-                    else:
-                        raise RuntimeError("Unsupported merge strategy")
+        if not isinstance(actions, np.ndarray):
+            actions = np.array(actions, dtype=np.float32)
+        
+        num_steps = actions.shape[0]
 
-    def step(self) -> Optional[np.ndarray]:
-        """Consumes one action step. Called by Robot Control Loop."""
         with self._lock:
-            try:
-                assert self.current_time in self.action_plan, "No action for current time"
-            except Exception as e:
-                logger.warning(f"ActionBuffer step warning: {e}")
-                return None
-            current_action = self.action_plan[self.current_time]
+            # 1. Update Time Boundaries
+            self.min_valid_time = min(self.min_valid_time, timestamp)
+            self.max_valid_time = max(self.max_valid_time, timestamp + num_steps)
+            self.min_valid_time = max(self.min_valid_time, self.max_valid_time - self.capacity)
+
+            # 2. Calculate Ring Indices
+            indices = (np.arange(num_steps) + timestamp) % self.capacity
+
+            # 3. Vectorized Merge (Average Strategy)
+
+
+            existing_mask = self.valid_mask[indices]
+            # Update existing slots: old * (1 - w) + new * w
+            if np.any(existing_mask):
+                idx_exist = indices[existing_mask]
+                self.buffer[idx_exist] = (
+                    self.buffer[idx_exist] * (1 - self.merge_weight) + 
+                    actions[existing_mask] * self.merge_weight
+                )
+            # Write to new slots
+            if np.any(~existing_mask):
+                idx_new = indices[~existing_mask]
+                self.buffer[idx_new] = actions[~existing_mask]
+                self.valid_mask[idx_new] = True
+
+    def step(self):
+        """
+        Consumes one action for the current time step.
+        """
+        with self._lock:
+            idx = self.current_time % self.capacity
+            # Return None if no valid action exists for current time
+            if not self.valid_mask[idx]: return None
+            action = self.buffer[idx].copy()
             self.current_time += 1
-            return current_action
-    
-    def snapshot(self) -> np.ndarray:
-        """export the current buffer state."""
-        with self._lock:
-            times = sorted(self.action_plan.keys())
-            actions = np.stack([self.action_plan[t] for t in times], axis=0)
-        return actions
+            return action
 
+    def left_valid_time(self):
+        '''
+        Returns the number of steps left to the end of the buffer.
+        '''
+        return self.max_valid_time - self.current_time
+
+    def snapshot(self):
+        """
+        Export all valid actions currently in the buffer.
+        Returns: (actions_numpy, start_timestamp)
+        """
+        with self._lock:
+            if self.max_valid_time == float('-inf'): return np.empty((0, self.action_dim)), 0
+            start_time = int(self.min_valid_time)
+            end_time = int(self.max_valid_time)
+            
+            if start_time >= end_time: return np.empty((0, self.action_dim)), 0
+            start_idx = start_time % self.capacity
+            end_idx = end_time % self.capacity
+            if start_idx < end_idx:
+                data = self.buffer[start_idx:end_idx].copy()
+            else:
+                part1 = self.buffer[start_idx:]
+                part2 = self.buffer[:end_idx]
+                data = np.concatenate((part1, part2), axis=0)
+            return data, start_time
 # ==============================================================================
 # === 2. Network Client (Pure I/O)                                           ===
 # ==============================================================================

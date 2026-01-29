@@ -10,14 +10,15 @@ import requests
 import av
 import numpy as np
 # Initialize the evaluation client
+worker_ids=["0"]
 eval_client = EvalClient(
-                    base_url="http://dsw-notebook-dsw-fh4w05j2tmvgkh5xtt-10002.vpc-2zef1skt5zeyxqsntfobm.instance-forward.dsw.cn-beijing.aliyuncs.com:55001",  # The base URL for the evaluation server
-                    worker_ids=["0"],  # Worker IDs
+                    base_url="http://dsw-notebook-dsw-fh4w05j2tmvgkh5xtt-55001.vpc-2zef1skt5zeyxqsntfobm.instance-forward.dsw.cn-beijing.aliyuncs.com:55001",  # The base URL for the evaluation server
+                    worker_ids=worker_ids,  # Worker IDs
                     config="configs/tasks/ebench/simple_pnp/task1.yml"  # Load a new task configuration file
                 )
 
 # Initialize the model client
-action_buffer = ActionBuffer(merge_strategy="replace")
+action_buffer = ActionBuffer()
 model_client = HttpClient(
     action_buffer,
     "127.0.0.1",
@@ -34,7 +35,7 @@ try:
         # Fetch the action from the model
         action = model_client.get_action()
 
-        if action is None:
+        if action_buffer.left_valid_time() < 10:
             print("No action received, sending data to the model.")
             # Extract relevant data from the current observation
             print(obs['0']['obs'].keys())
@@ -65,30 +66,43 @@ try:
         base_motion = action[14:17]
 
         # Process gripper actions
-        if left_gripper < 0.:
-            left_gripper = [0.04, 0.04]  # Close gripper
+        if left_gripper < -0.9:
+            left_gripper = [0.05, 0.05]  # open gripper
         else:
-            left_gripper = [0.0, 0.0]  # Open gripper
+            left_gripper = [-0.05, -0.05]  # close gripper
         
-        if right_gripper < 0.:
-            right_gripper = [0.04, 0.04]  # Close gripper
+        if right_gripper < -0.9:
+            right_gripper = [0.05, 0.05]  # open gripper
         else:
-            right_gripper = [0.0, 0.0]  # Open gripper
+            right_gripper = [-0.05, -0.05]  # close gripper
         
+
+
         # Format the action for submission
         format_action = {'0':{
             'action': left_joint.tolist() + left_gripper + right_joint.tolist() + right_gripper,
             'base_motion': base_motion.tolist(),
             'control_type': "joint_position"
         }}
-        data_to_send = {"image": obs['0']['obs']['camera_data']['top_camera']['rgb']}
-        ### save current image to 'exp/image{idx}.jpg'
+        
         print("Submitting action to environment.")
         obs, done = eval_client.step(format_action)  # Submit action and get the next observation
 
+        action_slice, start_idx = action_buffer.snapshot()
+
+        data_to_send = {
+            "image_top": obs['0']['obs']['camera_data']['top_camera']['rgb'],
+            "image_left": obs['0']['obs']['camera_data']['left_camera']['rgb'],
+            "image_right": obs['0']['obs']['camera_data']['right_camera']['rgb'],
+            "telemetry": action_slice,
+            "start_idx": start_idx,
+            "step_idx": action_buffer.current_time             
+        }
         response = requests.post("http://127.0.0.1:8080/upload",
                             data=msgpack.packb(data_to_send, use_bin_type=True))
         # Check if the task is done
+        if obs[worker_ids[0]]['obs']['reset']:
+            action_buffer.reset()
         if done:
             print("Task completed.")
             break

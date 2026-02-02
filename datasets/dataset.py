@@ -60,18 +60,21 @@ class InfiniteDataReader(IterableDataset):
             file_path = fileio.join_path(root, file)
             with io.BytesIO(fileio.get(file_path)) as f: meta = json.load(f)
             ### General Style
-            if 'dataset_name' in meta.keys() and 'datalist' in meta.keys():
-                print(f"== dataset {meta['dataset_name']} with {len(meta['datalist'])} trajs")
-                self.metas[meta["dataset_name"]] = meta
-            ### Lerobot v2.1 style
-            elif "codebase_version" in meta.keys() and meta["codebase_version"] == 'v2.1':
-                meta['datalist'] = []
-                if "root_path" not in meta.keys(): meta['root_path'] = "/".join(file_path.split("/")[:-2])
-                with io.BytesIO(fileio.get(fileio.join_path("/".join(file_path.split("/")[:-1]), "episodes.jsonl"))) as f:
-                    for line in f: meta['datalist'].append(json.loads(line.decode("utf-8")))
-                self.metas[meta['root_path']] = meta
-                print(f"== lerobot dataset {meta['robot_type']} with {meta['total_episodes']} trajs at {meta['root_path']}====")
-            else: raise NotImplementedError(f"unrecognized meta file format: {file}")
+            try:
+                if 'dataset_name' in meta.keys() and 'datalist' in meta.keys():
+                    print(f"== dataset {meta['dataset_name']} with {len(meta['datalist'])} trajs")
+                    self.metas[meta["dataset_name"]] = meta
+                ### Lerobot v2.1 style
+                elif "codebase_version" in meta.keys() and meta["codebase_version"] == 'v2.1':
+                    meta['datalist'] = []
+                    if "root_path" not in meta.keys(): meta['root_path'] = "/".join(file_path.split("/")[:-2])
+                    with io.BytesIO(fileio.get(fileio.join_path("/".join(file_path.split("/")[:-1]), "episodes.jsonl"))) as f:
+                        for line in f: meta['datalist'].append(json.loads(line.decode("utf-8")))
+                    self.metas[meta['root_path']] = meta
+                    print(f"== lerobot dataset {meta['robot_type']} with {meta['total_episodes']} trajs at {meta['root_path']}====")
+                else: raise NotImplementedError(f"unrecognized meta file format: {file}")
+            except:
+                print(f"!! failed to load meta file: {file}")
 
         self.image_aug = [
             transforms.Resize((224, 224), interpolation=InterpolationMode.BICUBIC),

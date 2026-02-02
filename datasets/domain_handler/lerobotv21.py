@@ -26,7 +26,7 @@ class LeRobotV21Handler(DomainHandler):
 
     # adjust this hyper-parameters according to your need
     CAMERA_VIEW = ["video.top_camera_view", "video.left_camera_view", "video.right_camera_view"]
-    ACTION_KEY = ["action.joints", "action.gripper", "base.motion"] # 12 + 2 + 3
+    ACTION_KEY = ["action.joints", "action.gripper", "action.base_delta"] # 12 + 2 + 3
     idx_for_delta = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     idx_for_mask_proprio = [12, 13, 14, 15, 16]
     ###########################################
@@ -56,8 +56,8 @@ class LeRobotV21Handler(DomainHandler):
             [all_action[:1], all_action], axis=0
         ) # pad the first action
         
-        freq = 30.0; qdur = 2.0; t = np.arange(all_action.shape[0], dtype=np.float64) / freq
-        idxs = list(range(0, all_action.shape[0] - 60))
+        freq = 30.0; qdur = 1.0; t = np.arange(all_action.shape[0], dtype=np.float64) / freq
+        idxs = list(range(0, all_action.shape[0] - 30))
         
         if training: random.shuffle(idxs)
         all_action = interp1d(t, all_action,  axis=0, bounds_error=False, 

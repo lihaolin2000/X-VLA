@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Image Stream</title>
+    <style>
+        #video-player {
+            max-width: 800px;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>Real-time Video Stream</h1>
+
+    <!-- Video Player for Image Stream -->
+    <h3>Real-time Image Stream:</h3>
+    <img id="video-player" style="max-width: 800px;" />
+
+    <script>
+        // Connect to the WebSocket server
+        var socket = io.connect('http://' + document.domain + ':' + location.port);
+
+        // Check if the WebSocket connection is established
+        socket.on('connect', function() {
+            console.log('WebSocket connected!');
+        });
+
+        socket.on('new_frame', function(data) {
+            console.log('Received data.frame:', data.frame);  // Debugging line
+            var imgElement = document.getElementById("video-player");
+            imgElement.src = "data:image/png;base64," + data.frame;
+        });
+    </script>
+</body>
+</html>

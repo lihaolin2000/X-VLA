@@ -64,8 +64,7 @@ class ActionBuffer:
             indices = (np.arange(num_steps) + timestamp) % self.capacity
 
             # 3. Vectorized Merge (Average Strategy)
-
-
+            # print(f"will update action buffer in {indices.tolist()}")
             existing_mask = self.valid_mask[indices]
             # Update existing slots: old * (1 - w) + new * w
             if np.any(existing_mask):
@@ -87,7 +86,9 @@ class ActionBuffer:
         with self._lock:
             idx = self.current_time % self.capacity
             # Return None if no valid action exists for current time
-            if not self.valid_mask[idx]: return None
+            if not self.valid_mask[idx]: 
+                print(f"inquiry for {self.current_time}, but no valid action exists")
+                return None
             action = self.buffer[idx].copy()
             self.current_time += 1
             return action

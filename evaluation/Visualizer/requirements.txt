@@ -1,3 +1,4 @@
 flask-socketio
 flask_cors
 eventlet
+numpy

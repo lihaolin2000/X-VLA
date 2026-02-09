@@ -1,0 +1,126 @@
+# Import necessary modules
+from evaluation.websocket_client import WebSocketClient, HttpClient, ActionBuffer
+import json_numpy
+import msgpack
+import msgpack_numpy as m
+m.patch()
+import numpy as np
+from genmanip_client import EvalClient
+import requests
+import av
+import numpy as np
+import cv2
+# Initialize the evaluation client
+worker_ids=["1"]
+eval_client = EvalClient(
+                    base_url="http://dsw-notebook-dsw-fh4w05j2tmvgkh5xtt-55001.vpc-2zef1skt5zeyxqsntfobm.instance-forward.dsw.cn-beijing.aliyuncs.com:55001",  # The base URL for the evaluation server
+                    worker_ids=worker_ids
+                )
+
+eval_client.start_new_job(
+    run_id="run_2026_02_03-long-1",
+    config_path=[
+        "ebench/long/fruit",
+        "ebench/long/bottle",
+        "ebench/long/pen",
+        "ebench/long/shop"
+    ],
+)
+eval_client._create_workers()
+# Initialize the model client
+action_buffer = ActionBuffer()
+model_client = HttpClient(
+    action_buffer,
+    "127.0.0.1",
+    8010)
+
+
+saved_video = []
+try:
+    print("Resetting the environment...")
+    obs = eval_client.reset()  # Reset environment and get initial observation
+    print("Environment reset complete. Starting action loop.")
+    
+    while True:
+        # Fetch the action from the model
+
+        if action_buffer.left_valid_time() < 10:
+            print("No action received, sending data to the model.")
+            # Extract relevant data from the current observation
+            print(obs[worker_ids[0]]['obs'].keys())
+            image = obs[worker_ids[0]]['obs']['camera_data']
+            instruction = obs[worker_ids[0]]['obs']['instruction']
+            proprio = np.asarray(obs[worker_ids[0]]['obs']['state.joints'])
+            payload = {
+                "proprio": json_numpy.dumps(proprio),  # Joint state
+                "language_instruction": instruction,  # Instruction
+                "image0": json_numpy.dumps(image['top_camera']['rgb']),
+                "image1": json_numpy.dumps(image['left_camera']['rgb']),
+                "image2": json_numpy.dumps(image['right_camera']['rgb']),
+                "domain_id": 0,
+                "steps": 10
+            }
+            
+            # Send data to the model and get the next action
+            model_client.update(payload)
+
+        action = model_client.get_action()
+        # Process the action
+        left_joint = action[:6]
+        right_joint = action[6:12]
+        left_gripper = action[12]
+        right_gripper = action[13]
+        base_motion = action[14:17]
+
+        # Process gripper actions
+        if left_gripper < 0.5:
+            left_gripper = [0.05, 0.05]  # open gripper
+        else:
+            left_gripper = [-0.05, -0.05]  # close gripper
+        
+        if right_gripper < 0.5:
+            right_gripper = [0.05, 0.05]  # open gripper
+        else:
+            right_gripper = [-0.05, -0.05]  # close gripper
+
+        # Format the action for submission
+        format_action = {worker_ids[0]:{
+            'action': left_joint.tolist() + left_gripper + right_joint.tolist() + right_gripper,
+            'base_motion': base_motion.tolist(),
+            'control_type': "joint_position"
+        }}
+        
+        print("Submitting action to environment.")
+        obs, done = eval_client.step(format_action)  # Submit action and get the next observation
+
+
+        # obs[worker_ids[0]]['obs']['state.joints'] = action[:12]
+        # obs[worker_ids[0]]['obs']['camera_data']['top_camera']['rgb'] = \
+        #     cv2.cvtColor(obs[worker_ids[0]]['obs']['camera_data']['top_camera']['rgb'], cv2.COLOR_BGR2RGB)
+        # obs[worker_ids[0]]['obs']['camera_data']['left_camera']['rgb'] = \
+        #     cv2.cvtColor(obs[worker_ids[0]]['obs']['camera_data']['left_camera']['rgb'], cv2.COLOR_BGR2RGB)
+        # obs[worker_ids[0]]['obs']['camera_data']['right_camera']['rgb'] = \
+        #     cv2.cvtColor(obs[worker_ids[0]]['obs']['camera_data']['right_camera']['rgb'], cv2.COLOR_BGR2RGB)
+        action_slice, start_idx = action_buffer.snapshot()
+
+        data_to_send = {
+            "image_top": obs[worker_ids[0]]['obs']['camera_data']['top_camera']['rgb'],
+            "image_left": obs[worker_ids[0]]['obs']['camera_data']['left_camera']['rgb'],
+            "image_right": obs[worker_ids[0]]['obs']['camera_data']['right_camera']['rgb'],
+            "telemetry": action_slice,
+            "start_idx": start_idx,
+            "step_idx": action_buffer.current_time             
+        }
+        response = requests.post("http://127.0.0.1:8080/upload",
+                            data=msgpack.packb(data_to_send, use_bin_type=True))
+        # Check if the task is done
+        if obs[worker_ids[0]]['obs']['reset']:
+            action_buffer.reset()
+        if done:
+            print("Task completed.")
+            break
+finally:
+
+    print("Cleaning up and killing workers...")
+    eval_client.kill_workers()
+    print("Client cleaned.")

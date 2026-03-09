@@ -196,12 +196,14 @@ class AutoActionSpace(BaseActionSpace):
                  real_dim: int, 
                  max_dim: int = 20,
                  idx_for_delta: Tuple[int, ...] = (),
+                 idx_for_mask_proprio: Tuple[int, ...] = (),
                  **kwargs
                 ):
         super().__init__()
         self.real_dim = real_dim
         self.dim_action = max_dim  # Model-facing dimension
         self.idx_for_delta = idx_for_delta
+        self.idx_for_mask_proprio = idx_for_mask_proprio
         self.mse = nn.MSELoss()
 
     def _pad_to_model_dim(self, x: torch.Tensor) -> torch.Tensor:
@@ -256,13 +258,18 @@ class AutoActionSpace(BaseActionSpace):
         # apply delta encoding if specified
         if self.idx_for_delta:
             action[..., self.idx_for_delta] -= proprio[..., self.idx_for_delta]
+        if self.idx_for_mask_proprio:
+            proprio[..., self.idx_for_mask_proprio] = 0.0
         return action, proprio
 
     def preprocess(self, proprio: torch.Tensor, action: torch.Tensor, mode: str = "train"):
         """
         Pad action from real_dim to max_dim for the model.
         """
-        return self._pad_to_model_dim(proprio), self._pad_to_model_dim(action)
+        proprio = self._pad_to_model_dim(proprio)
+        if self.idx_for_mask_proprio:
+            proprio[..., self.idx_for_mask_proprio] = 0.0
+        return proprio, self._pad_to_model_dim(action)
 
     def postprocess(self, action: torch.Tensor, proprio: torch.Tensor) -> torch.Tensor:
         """

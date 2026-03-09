@@ -51,6 +51,7 @@ class XVLAConfig(PretrainedConfig):
         max_action_dim: int = 20,  # Maximum action dimension for padding (used by "auto" action mode)
         real_action_dim: int = 20,
         idx_for_delta: int = (),  # Indices of action dimensions to apply delta encoding
+        idx_for_mask_proprio: int = (),  # Indices of proprio dimensions to mask
         num_actions: int = 30,
         action_mode: str = "ee6d",
         use_proprio: bool = True,
@@ -85,7 +86,7 @@ class XVLAConfig(PretrainedConfig):
         self.real_action_dim = real_action_dim
         self.max_action_dim = max_action_dim
         self.idx_for_delta = idx_for_delta
-        
+        self.idx_for_mask_proprio = idx_for_mask_proprio
         # Initialize base HF config attributes (e.g. name_or_path)
         super().__init__(**kwargs)
 

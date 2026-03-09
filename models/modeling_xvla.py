@@ -60,7 +60,8 @@ class XVLA(PreTrainedModel, ModelServer):
                 config.action_mode.lower(),
                 real_dim=config.real_action_dim,
                 max_dim=config.max_action_dim,
-                idx_for_delta=config.idx_for_delta
+                idx_for_delta=config.idx_for_delta,
+                idx_for_mask_proprio=config.idx_for_mask_proprio
             )
         else:
             self.action_space = build_action_space(config.action_mode.lower())

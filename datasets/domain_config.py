@@ -40,44 +40,52 @@ DATA_WEIGHTS = {
 
 DATA_DOMAIN_ID = {
     # ft
-    "Bridge": 0,
-    "RT1": 1,
-    "Calvin": 2,
-    "libero": 3,
-    "widowx-air": 4,
-    "AIR-AGILEX-HQ": 5,
-    "robotwin2_abs_ee": 6,
-    "robotwin2_clean": 6,
-    "robocasa-human": 7,
-    "VLABench": 8,
-    "AGIBOT-challenge": 9,
-    "AIR-AGILEX": 10,
-    "AIRBOT": 18,
+    # "Bridge": 0,
+    # "RT1": 1,
+    # "Calvin": 2,
+    # "libero": 3,
+    # "widowx-air": 4,
+    # "AIR-AGILEX-HQ": 5,
+    # "robotwin2_abs_ee": 6,
+    # "robotwin2_clean": 6,
+    # "robocasa-human": 7,
+    # "VLABench": 8,
+    # "AGIBOT-challenge": 9,
+    # "AIR-AGILEX": 10,
+    # "AIRBOT": 18,
     
-    # pretraining
-    "robomind-franka": 11,
-    "robomind-ur": 12,
-    "Droid-Left": 13,
-    "Droid-Right": 14,
-    "AGIBOT": 15,
-    "robomind-agilex": 16,
-    "robomind-franka-dual": 17,
+    # # pretraining
+    # "robomind-franka": 11,
+    # "robomind-ur": 12,
+    # "Droid-Left": 13,
+    # "Droid-Right": 14,
+    # "AGIBOT": 15,
+    # "robomind-agilex": 16,
+    # "robomind-franka-dual": 17,
     
-    # agibot world challenge
-    "agiworld-on-site-pack": 0, # 20,
-    "agiworld-on-site-pack-extra": 0, # 20,
-    "agiworld-on-site-conveyor": 0, # 21,
-    "agiworld-on-site-conveyor-extra": 0, #26,
-    "agiworld-on-site-restock": 0, #22,
-    "agiworld-on-site-pour": 0, # 23,
-    "agiworld-on-site-microwave": 0, #24,
-    "agiworld-on-site-cloth": 0, #25,
-    "agiworld-on-site-cloth-2": 0, #27,
+    # # agibot world challenge
+    # "agiworld-on-site-pack": 0, # 20,
+    # "agiworld-on-site-pack-extra": 0, # 20,
+    # "agiworld-on-site-conveyor": 0, # 21,
+    # "agiworld-on-site-conveyor-extra": 0, #26,
+    # "agiworld-on-site-restock": 0, #22,
+    # "agiworld-on-site-pour": 0, # 23,
+    # "agiworld-on-site-microwave": 0, #24,
+    # "agiworld-on-site-cloth": 0, #25,
+    # "agiworld-on-site-cloth-2": 0, #27,
     
     
     # lerobot-sim
     "lift2": 0,
 
     # x2robot
-    "x2robot": 0
+    "x2robot": 0,
+
+    # starvla
+    
+    "Bridge": 0,
+    "RT1": 1,
+    "libero": 2,
+    "aloha": 3, # robotwin-2.0-lerobot
+    "GR1ArmsAndWaistFourierHands": 4,
 }

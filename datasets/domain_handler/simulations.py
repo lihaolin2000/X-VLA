@@ -66,6 +66,14 @@ class RT1Handler(BaseHDF5Handler):
         return range(0, max(0, T_left - 6))
 
 
+    def iter_episode(self, **kwargs) -> Iterable[dict]:
+        for it in super().iter_episode(**kwargs):
+            yield {
+                "idx_for_delta": [0, 1, 2],
+                **it
+            }
+
+
 # ------------------------------- Bridge --------------------------------------
 class BridgeHandler(BaseHDF5Handler):
     """
@@ -172,6 +180,7 @@ class RobotWin2Handler(BaseHDF5Handler):
 
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         return range(0, max(0, T_left - 10))
+
 
 
 # ---------------------------- Robocasa-Human ---------------------------------

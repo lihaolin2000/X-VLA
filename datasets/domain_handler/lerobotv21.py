@@ -1,19 +1,3 @@
-# ------------------------------------------------------------------------------
-# Copyright 2025 2toINF (https://github.com/2toINF)
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ------------------------------------------------------------------------------
-
 from __future__ import annotations
 import numpy as np, torch, random
 from mmengine import fileio
@@ -24,13 +8,11 @@ from .base import DomainHandler
 
 class LeRobotV21Handler(DomainHandler):
 
-    # adjust this hyper-parameters according to your need
+    # 默认超参数
     CAMERA_VIEW = ["video.top_camera_view", "video.left_camera_view", "video.right_camera_view"]
-    ACTION_KEY = ["action.joints", "action.gripper", "action.base_delta"] # 12 + 2 + 3
-    idx_for_delta = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    ACTION_KEY = ["action.joints", "action.gripper", "action.base"] # 12 + 2 + 3
+    idx_for_delta = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16]
     idx_for_mask_proprio = [12, 13, 14, 15, 16]
-    ###########################################
-    
     
     def iter_episode(self, traj_idx: int, *, num_actions: int, training: bool,
                      image_aug, lang_aug_map: dict | None, **kwargs):
@@ -38,56 +20,74 @@ class LeRobotV21Handler(DomainHandler):
         
         episode_index = item["episode_index"]
         episode_chunk = episode_index // self.meta["chunks_size"]
+        
         data_path = fileio.join_path(self.meta["root_path"], self.meta["data_path"]).format(
             episode_chunk=episode_chunk, episode_index=episode_index
         )
-        images = [read_video_to_frames(
-            fileio.join_path(self.meta["root_path"], self.meta["video_path"]).format(
-            episode_chunk=episode_chunk, episode_index=episode_index, video_key = vkey
-        ))
-        for vkey in self.CAMERA_VIEW]
+        
+        images = []
+        for vkey in self.CAMERA_VIEW:
+            video_p = fileio.join_path(self.meta["root_path"], self.meta["video_path"]).format(
+                episode_chunk=episode_chunk, episode_index=episode_index, video_key=vkey
+            )
+            images.append(read_video_to_frames(video_p))
 
         image_mask = torch.ones(self.num_views, dtype=torch.bool)
         data = read_parquet(data_path)
         
-        all_action = np.concatenate(
-            [np.asarray(data[action_key]) for action_key in self.ACTION_KEY], axis=-1)
-        all_action = np.concatenate(
-            [all_action[:1], all_action], axis=0
-        ) # pad the first action
+        raw_actions = np.concatenate(
+            [np.asarray(data[action_key]) for action_key in self.ACTION_KEY], axis=-1
+        ).astype(np.float32)
         
-        freq = 30.0; qdur = 1.0; t = np.arange(all_action.shape[0], dtype=np.float64) / freq
-        idxs = list(range(0, all_action.shape[0] - 30))
+        raw_actions[:, -3:-1] *= 10.0 
+        raw_actions[:, -1] = np.unwrap(raw_actions[:, -1], period=360) / 10.0
+    
+        freq = 30.0
+        qdur = 2.0
+        t = np.arange(raw_actions.shape[0], dtype=np.float64) / freq
         
-        if training: random.shuffle(idxs)
-        all_action = interp1d(t, all_action,  axis=0, bounds_error=False, 
-                              fill_value=(all_action[0], all_action[-1]))
+        idxs = list(range(0, max(1, raw_actions.shape[0] - 30)))
+        
+        if training: 
+            random.shuffle(idxs)
+            
+        interp_func = interp1d(t, raw_actions, axis=0, bounds_error=False, 
+                              fill_value=(raw_actions[0], raw_actions[-1]))
         
         ins = item["tasks"][0]
         for idx in idxs:
             imgs = [] 
             for v in range(min(self.num_views, len(images))):
                 imgs.append(image_aug(Image.fromarray(images[v][idx])))
-            while len(imgs) < self.num_views: imgs.append(torch.zeros_like(imgs[0]))
+
+            while len(imgs) < self.num_views: 
+                imgs.append(torch.zeros_like(imgs[0]))
+            
             image_input = torch.stack(imgs, 0)
-            cur = t[idx]
-            q = np.linspace(cur, min(cur + qdur, float(t.max())), num_actions + 1, dtype=np.float32)
-            cur_action = torch.tensor(all_action(q))
-            if (cur_action[1]-cur_action[0]).abs().max() < 1e-5: continue
+            cur_t = t[idx]
             
-            ### pad the action to max_action_dim
-            cur_action = torch.cat([
-                cur_action,
-                torch.zeros((cur_action.shape[0], 20 - cur_action.shape[1]))
-            ], dim=-1)
+            q = np.linspace(cur_t, min(cur_t + qdur, float(t.max())), num_actions + 1, dtype=np.float32)
             
-            if lang_aug_map is not None and ins in lang_aug_map: ins = random.choice(lang_aug_map[ins])
+            cur_action = torch.from_numpy(interp_func(q)).float()
+            
+            if cur_action.shape[1] < 20:
+                padding = torch.zeros((cur_action.shape[0], 20 - cur_action.shape[1]))
+                cur_action = torch.cat([cur_action, padding], dim=-1)
+            
+            if lang_aug_map is not None and ins in lang_aug_map: 
+                ins = random.choice(lang_aug_map[ins])
             
             yield {
                 "language_instruction": ins,
                 "image_input": image_input,
                 "image_mask": image_mask,
-                "abs_trajectory": cur_action.float(),
+                "abs_trajectory": cur_action,
                 "idx_for_delta": self.idx_for_delta,
                 "idx_for_mask_proprio": self.idx_for_mask_proprio
             }
+
+class RoboTwin2Handler(LeRobotV21Handler):
+    CAMERA_VIEW = ["observation.images.cam_high", "observation.images.cam_left_wrist", "observation.images.cam_right_wrist"]
+    ACTION_KEY = ["observation.state"] 
+    idx_for_delta = []
+    idx_for_mask_proprio = []

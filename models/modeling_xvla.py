@@ -99,6 +99,135 @@ class XVLA(PreTrainedModel, ModelServer):
         # Deferred FastAPI app
         self.app: FastAPI | None = None
 
+    # ========================== pretrained loading ================================
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        """
+        Load pretrained XVLA, automatically handling action-head dimension
+        mismatches.
+
+        * Shape-compatible parameters are loaded normally.
+        * Mismatched parameters are logged and explicitly re-initialised
+          (Xavier-uniform for weight, zeros for bias — matching
+          ``DomainAwareLinear.__init__``).
+        """
+        import os
+        import json
+        import logging
+        from collections import OrderedDict
+
+        logger = logging.getLogger(__name__)
+
+        config = kwargs.pop("config", None)
+        torch_dtype = kwargs.pop("torch_dtype", None)
+
+        if config is None:
+            config = cls.config_class.from_pretrained(
+                pretrained_model_name_or_path, **kwargs
+            )
+
+        model = cls(config, *model_args)
+        if torch_dtype is not None:
+            model = model.to(torch_dtype)
+
+        pretrained_state = cls._load_pretrained_state_dict(
+            pretrained_model_name_or_path
+        )
+        model_state = model.state_dict()
+
+        to_load = OrderedDict()
+        mismatched = []
+
+        for key, param in pretrained_state.items():
+            if key not in model_state:
+                continue
+            if param.shape == model_state[key].shape:
+                to_load[key] = param
+            else:
+                mismatched.append(
+                    (key, tuple(param.shape), tuple(model_state[key].shape))
+                )
+
+        model.load_state_dict(to_load, strict=False)
+
+        if mismatched:
+            logger.warning(
+                "=== Mismatched pretrained keys (reinitialized) ===\n"
+                + "\n".join(
+                    f"  {k}: pretrained {ps} -> current {cs}"
+                    for k, ps, cs in mismatched
+                )
+            )
+            for key, _, _ in mismatched:
+                parts = key.split(".")
+                module = model
+                for part in parts[:-1]:
+                    module = getattr(module, part)
+                param = getattr(module, parts[-1])
+                with torch.no_grad():
+                    if "bias" in key:
+                        torch.nn.init.zeros_(param)
+                    elif param.dim() >= 2:
+                        torch.nn.init.xavier_uniform_(param)
+                    else:
+                        torch.nn.init.zeros_(param)
+            logger.warning(
+                "Above %d parameter(s) have been re-initialised.",
+                len(mismatched),
+            )
+
+        return model
+
+    @staticmethod
+    def _load_pretrained_state_dict(model_path: str) -> dict:
+        """Load state dict from a local checkpoint (file or directory).
+
+        Supports single-file, directory, and sharded safetensors / bin.
+        """
+        import os
+        import json
+        from collections import OrderedDict
+
+        def _load_safetensors(path):
+            from safetensors.torch import load_file
+            return load_file(path)
+
+        def _load_bin(path):
+            return torch.load(path, map_location="cpu")
+
+        if os.path.isfile(model_path):
+            if model_path.endswith(".safetensors"):
+                return _load_safetensors(model_path)
+            return _load_bin(model_path)
+
+        for fname, loader in [
+            ("model.safetensors", _load_safetensors),
+            ("pytorch_model.bin", _load_bin),
+        ]:
+            fpath = os.path.join(model_path, fname)
+            if os.path.isfile(fpath):
+                return loader(fpath)
+
+        for index_name, loader in [
+            ("model.safetensors.index.json", _load_safetensors),
+            ("pytorch_model.bin.index.json", _load_bin),
+        ]:
+            index_path = os.path.join(model_path, index_name)
+            if os.path.isfile(index_path):
+                with open(index_path) as f:
+                    weight_map = json.load(f)["weight_map"]
+                state_dict = OrderedDict()
+                for shard_file in dict.fromkeys(weight_map.values()):
+                    state_dict.update(
+                        loader(os.path.join(model_path, shard_file))
+                    )
+                return state_dict
+
+        raise FileNotFoundError(
+            f"No checkpoint found at '{model_path}'. Expected "
+            f"model.safetensors, pytorch_model.bin, or sharded index files."
+        )
+
     # ============================= Florence2 encoder =============================
     def forward_vlm(
         self,

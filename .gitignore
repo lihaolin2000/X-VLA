@@ -217,3 +217,10 @@ runnings/*
 logs/
 metas/
 demo.ipynb
+
+# Local runtime artifacts (do not commit)
+.external/
+.hf_cache/
+.libero/
+.mplconfig/
+.numba_cache/
